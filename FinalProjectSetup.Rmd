@@ -29,15 +29,6 @@ library(SummarizedExperiment)
 
 if (!require("DESeq2")) BiocManager::install("DESeq2")
 library(DESeq2)
-
-if (!require("sesame")) BiocManager::install("sesame")
-library(sesame)
-
-if (!require("sesameData")) BiocManager::install("sesameData")
-library(sesameData)
-
-if (!require("limma")) BiocManager::install("limma")
-library(limma)
 ```
 
 
@@ -180,6 +171,37 @@ ggsave(paste0(output_dir, "/KM_BRCA2.png"), plot = plot_brca2$plot, width = 8, h
 print(plot_brca$plot)
 print(plot_brca1$plot)
 print(plot_brca2$plot)
+```
+
+
+```{r}
+# lollipop plots
+
+# obtain the mutation clinical data frame
+maf_clinical <- maf_object@clinical.data
+
+# create a column in the mutation clinical data frame that checks to see if patients are in the list of BRCA1/2 mutant barcodes; if they are not present, put "None"
+maf_clinical$BRCA_type <- ifelse(maf_clinical$Tumor_Sample_Barcode %in% brca1_barcodes, "BRCA1", ifelse(maf_clinical$Tumor_Sample_Barcode %in% brca2_barcodes, "BRCA2", "None"))
+
+# factorize column so it can be used in analysis
+maf_clinical$BRCA_type <- factor(maf_clinical$BRCA_type)
+
+# filter out the BRCA1 patients, gather their barcodes, and subset the maf by those barcodes
+brca1_filter <- ifelse(maf_clinical$BRCA_type == 'BRCA1', TRUE, FALSE)
+brca1_patient_barcodes <- maf_clinical$Tumor_Sample_Barcode[brca1_filter]
+brca1_maf <- subsetMaf(maf = maf_object,
+                       tsb = brca1_patient_barcodes)
+
+# filter out the BRCA2 patients, gather their barcodes, and subset the maf by those barcodes
+brca2_filter <- ifelse(maf_clinical$BRCA_type == 'BRCA2', TRUE, FALSE)
+brca2_patient_barcodes <- maf_clinical$Tumor_Sample_Barcode[brca2_filter]
+brca2_maf <- subsetMaf(maf = maf_object, tsb = brca2_patient_barcodes)
+
+# create lollipop plots using the subsetted BRCA1/2 maf dataframes
+lollipopPlot(maf = brca1_maf, gene = 'BRCA1')
+
+lollipopPlot(maf = brca2_maf, gene = 'BRCA2')
+
 ```
 
 
