@@ -1,7 +1,3 @@
-```{r setup}
-    knitr::opts_knit$set(root.dir = normalizePath("/home1/shichong/490_cluster/analysis_data")) 
-```
-
 ```{r}
 # Install and load required packages
 if (!require("BiocManager")) install.packages("BiocManager")
@@ -120,7 +116,7 @@ ov_clinical$death_event <- ifelse(ov_clinical$vital_status == "Dead", TRUE, FALS
 ```
 
 
-#KM plots
+# KM plots
 ```{r}
 # Create Kaplan-Meier survival curves for BRCA mutation groups
 survival_object <- Surv(time = ov_clinical$survival_time, event = ov_clinical$death_event)
@@ -240,7 +236,7 @@ filtered_results <- filtered_results[is.finite(filtered_results$log2FoldChange) 
 filtered_results$logP <- -log10(filtered_results$padj)
 ```
 
-#Convert ENSEMBL ID to Gene Label
+# Convert ENSEMBL ID to Gene Label
 ```{r}
 filtered_results$ensembl_id <- gsub("\\..*$", "", rownames(filtered_results))  # Remove version numbers if present
 # Load biomaRt
@@ -272,7 +268,7 @@ colnames(filtered_results)[colnames(filtered_results) == "external_gene_name"] <
 
 ```
 
-#volcano w/ label and adjusted threshold
+# volcano w/ label and adjusted threshold
 ```{r}
 # Install and load ggrepel if not already installed
 if (!require("ggrepel")) install.packages("ggrepel")
@@ -332,7 +328,7 @@ print(volcano_plot)
 
 ```
 
-#Output top 10 DEGs
+# Output top 10 DEGs
 ```{r}
 # Filter significant genes (optional, based on adjusted p-value)
 significant_genes <- filtered_results[filtered_results$padj < 0.05, ]
@@ -358,7 +354,7 @@ write.csv(top_10_underexpressed, file = "top_10_underexpressed_genes.csv", row.n
 
 ```
 
-#Output top 100 DEGs
+# Output top 100 DEGs
 ```{r}
 # Filter significant genes (optional, based on adjusted p-value)
 significant_genes <- filtered_results[filtered_results$padj < 0.05, ]
