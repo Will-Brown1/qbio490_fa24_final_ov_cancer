@@ -1,12 +1,10 @@
 ---
-title: "FinalProjectSetup"
-output: word_document
-date: "2024-12-03"
+title: "Final Ovarian Cancer Project Script"
+output: html_notebook
 ---
-  
+
 
 ```{r}
-# Install and load required packages
 if (!require("BiocManager")) install.packages("BiocManager")
 
 if (!require("TCGAbiolinks")) BiocManager::install("TCGAbiolinks")
@@ -38,42 +36,35 @@ library(sesameData)
 
 if (!require("limma")) BiocManager::install("limma")
 library(limma)
-```
 
 
-```{r}
-# Query and download RNA-seq data from TCGA
-# This section downloads RNA expression quantification data for TCGA-OV
+output_dir <- "qbio490_fa24_final_ov/outputs"
+if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+setwd(output_dir) 
+
+#Query, download, and prepare RNA-seq data
 rna_query <- GDCquery(
-  project = "TCGA-OV",  # Specify the project: Ovarian Cancer
+  project = "TCGA-OV",
   data.category = "Transcriptome Profiling",
   data.type = "Gene Expression Quantification",
-  workflow.type = "STAR - Counts"  # STAR alignment pipeline
+  workflow.type = "STAR - Counts"
 )
-GDCdownload(rna_query)  # Download the data
-rna_se <- GDCprepare(rna_query)  # Prepare the data into SummarizedExperiment format
-ov_rna_clinical <- as.data.frame(rna_se@colData)  # Extract clinical metadata from RNA-seq
-```
+GDCdownload(rna_query)  #Download the RNA-seq data
+rna_se <- GDCprepare(rna_query)  #Prepare the RNA-seq data
 
-
-```{r}
-# Query and download clinical data from TCGA
+#Query, download, and prepare clinical data
 clin_query <- GDCquery(
-  project = "TCGA-OV",  # Specify the project: Ovarian Cancer
+  project = "TCGA-OV",
   data.category = "Clinical",
   data.type = "Clinical Supplement",
   data.format = "BCR Biotab"
 )
-GDCdownload(clin_query)  # Download the data
-clinical.BCRtab.all <- GDCprepare(clin_query)  # Prepare the data
-ov_clinical <- clinical.BCRtab.all$clinical_patient_ov[-c(1,2),]  # Remove non-patient data rows
-colnames(ov_clinical)[colnames(ov_clinical) == "bcr_patient_barcode"] <- "Tumor_Sample_Barcode"  # Rename key column
-```
+GDCdownload(clin_query)  #Download the clinical data
+clinical_data <- GDCprepare(clin_query)  #Clinical data prep
+ov_clinical <- clinical_data$clinical_patient_ov[-c(1, 2), ]  #Excludes non-patient rows
+colnames(ov_clinical)[colnames(ov_clinical) == "bcr_patient_barcode"] <- "Tumor_Sample_Barcode"
 
-
-```{r}
-# Query and prepare mutation data
-# This section focuses on extracting BRCA1 and BRCA2 mutation data
+#Query, download, and prepare mutation data
 maf_query <- GDCquery(
   project = "TCGA-OV",
   data.category = "Simple Nucleotide Variation",
@@ -81,66 +72,36 @@ maf_query <- GDCquery(
   data.type = "Masked Somatic Mutation",
   workflow.type = "Aliquot Ensemble Somatic Variant Merging and Masking"
 )
-GDCdownload(maf_query)  # Download the mutation data
-maf <- GDCprepare(maf_query)  # Prepare the mutation data
-maf_object <- read.maf(maf = maf, clinicalData = ov_clinical, isTCGA = TRUE)  # Create a MAF object
+GDCdownload(maf_query)  #mutation data
+maf <- GDCprepare(maf_query)  #mutation data prep
+maf_object <- read.maf(maf = maf, clinicalData = ov_clinical, isTCGA = TRUE)
 
-# Add BRCA mutation statuses to clinical data
-brca1_mask <- maf_object@data$Hugo_Symbol == "BRCA1"
-brca2_mask <- maf_object@data$Hugo_Symbol == "BRCA2"
-
-brca1_barcodes <- unique(maf_object@data$Tumor_Sample_Barcode[brca1_mask])
-brca2_barcodes <- unique(maf_object@data$Tumor_Sample_Barcode[brca2_mask])
-
+#Adding BRCA mutation statuses to clinical data
+brca1_barcodes <- unique(maf_object@data$Tumor_Sample_Barcode[maf_object@data$Hugo_Symbol == "BRCA1"])
+brca2_barcodes <- unique(maf_object@data$Tumor_Sample_Barcode[maf_object@data$Hugo_Symbol == "BRCA2"])
 ov_clinical$BRCA1 <- ifelse(ov_clinical$Tumor_Sample_Barcode %in% brca1_barcodes, "Mutated", "Not Mutated")
 ov_clinical$BRCA2 <- ifelse(ov_clinical$Tumor_Sample_Barcode %in% brca2_barcodes, "Mutated", "Not Mutated")
 ov_clinical$BRCA <- ifelse(ov_clinical$BRCA1 == "Mutated" | ov_clinical$BRCA2 == "Mutated", "Mutated", "Not Mutated")
-
-# Convert mutation statuses to factors
 ov_clinical$BRCA <- factor(ov_clinical$BRCA, levels = c("Not Mutated", "Mutated"))
-ov_clinical$BRCA1 <- factor(ov_clinical$BRCA1, levels = c("Not Mutated", "Mutated"))
-ov_clinical$BRCA2 <- factor(ov_clinical$BRCA2, levels = c("Not Mutated", "Mutated"))
-```
 
-
-```{r}
-# Prepare survival data
-# This section calculates survival times and events based on clinical data
+#Survival data prep
 ov_clinical$death_days_to <- suppressWarnings(as.numeric(ov_clinical$death_days_to))
 ov_clinical$last_contact_days_to <- suppressWarnings(as.numeric(ov_clinical$last_contact_days_to))
-
 ov_clinical$survival_time <- ifelse(
   !is.na(ov_clinical$death_days_to),
   ov_clinical$death_days_to,
   ov_clinical$last_contact_days_to
 )
-
-# Remove patients with missing survival times
 ov_clinical <- ov_clinical[!is.na(ov_clinical$survival_time), ]
-
-# Create a binary event indicator (1: death, 0: censored)
 ov_clinical$death_event <- ifelse(ov_clinical$vital_status == "Dead", TRUE, FALSE)
-```
 
-
-KM plots
-```{r}
-# Create Kaplan-Meier survival curves for BRCA mutation groups
+#Kaplan-Meier survival analysis
 survival_object <- Surv(time = ov_clinical$survival_time, event = ov_clinical$death_event)
-
 fit_brca <- survfit(survival_object ~ BRCA, data = ov_clinical)  # Combined BRCA mutations
 fit_brca1 <- survfit(survival_object ~ BRCA1, data = ov_clinical)  # BRCA1 mutations
 fit_brca2 <- survfit(survival_object ~ BRCA2, data = ov_clinical)  # BRCA2 mutations
 
-```
-
-```{r}
-# Generate KM plots
-# Generate Kaplan-Meier plots and save them
-output_dir <- "outputs"  # Create outputs folder
-if (!dir.exists(output_dir)) dir.create(output_dir)
-
-# Generate plots
+#Create KM plot for BRCA mutation status
 plot_brca <- ggsurvplot(
   fit_brca,
   pval = TRUE,
@@ -171,16 +132,65 @@ plot_brca2 <- ggsurvplot(
   legend.labs = c("Not Mutated", "Mutated")
 )
 
-# Save plots to output folder
-ggsave(paste0(output_dir, "/KM_BRCAMutations.png"), plot = plot_brca$plot, width = 8, height = 6)
-ggsave(paste0(output_dir, "/KM_BRCA1.png"), plot = plot_brca1$plot, width = 8, height = 6)
-ggsave(paste0(output_dir, "/KM_BRCA2.png"), plot = plot_brca2$plot, width = 8, height = 6)
 
-# Display plots
-print(plot_brca$plot)
-print(plot_brca1$plot)
-print(plot_brca2$plot)
+#Save KM plot
+ggsave("KM_BRCAMutations.png", plot = plot_brca$plot, width = 8, height = 6)
+ggsave("KM_BRCA1.png", plot = plot_brca1$plot, width = 8, height = 6)
+ggsave("KM_BRCA2.png", plot = plot_brca2$plot, width = 8, height = 6)
+
+
+#Differential Expression Analysis
+rna_counts <- assay(rna_se, "unstranded")
+rna_clinical <- as.data.frame(rna_se@colData)
+rna_clinical$BRCA <- ov_clinical$BRCA[match(substr(rownames(rna_clinical), 1, 12), ov_clinical$Tumor_Sample_Barcode)]
+rna_clinical <- rna_clinical[!is.na(rna_clinical$BRCA), ]
+rna_counts <- rna_counts[, colnames(rna_counts) %in% rownames(rna_clinical)]
+
+dds <- DESeqDataSetFromMatrix(
+  countData = rna_counts,
+  colData = rna_clinical,
+  design = ~ BRCA
+)
+dds <- DESeq(dds)
+results <- as.data.frame(results(dds, contrast = c("BRCA", "Mutated", "Not Mutated")))
+
+#Save differential expression results
+write.csv(results, "DEG_results.csv", row.names = TRUE)
+
+#Generate Volcano Plot
+results$logP <- -log10(results$padj)
+results$Significance <- ifelse(
+  results$padj < 0.05 & abs(results$log2FoldChange) > 1,
+  "Significant",
+  "Not Significant"
+)
+volcano_plot <- ggplot(results, aes(x = log2FoldChange, y = logP, color = Significance)) +
+  geom_point(alpha = 0.8, size = 1.5) +
+  theme_minimal() +
+  labs(
+    title = "Volcano Plot: Differential Expression Analysis",
+    x = "Log2 Fold Change",
+    y = "-Log10 Adjusted P-value"
+  )
+ggsave("VolcanoPlot.png", plot = volcano_plot, width = 8, height = 6)
+
+#Generate Lollipop Plots
+brca1_maf <- subsetMaf(maf = maf_object, tsb = brca1_barcodes)
+brca2_maf <- subsetMaf(maf = maf_object, tsb = brca2_barcodes)
+pdf(file = "Lollipop_BRCA1.pdf", width = 8, height = 6)
+lollipopPlot(maf = brca1_maf, gene = "BRCA1")
+dev.off()
+
+# Generate and save lollipop plot for BRCA2
+pdf(file = "Lollipop_BRCA2.pdf", width = 8, height = 6)
+lollipopPlot(maf = brca2_maf, gene = "BRCA2")
+dev.off()
+
+#Output top 100 DEGs
+significant_genes <- results[results$padj < 0.05 & !is.na(results$padj), ]
+top_100_overexpressed <- head(significant_genes[order(-significant_genes$log2FoldChange), ], 100)
+top_100_underexpressed <- head(significant_genes[order(significant_genes$log2FoldChange), ], 100)
+write.csv(top_100_overexpressed, "Top100_Overexpressed.csv")
+write.csv(top_100_underexpressed, "Top100_Underexpressed.csv")
+
 ```
-
-
-
