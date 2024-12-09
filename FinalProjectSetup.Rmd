@@ -1,10 +1,3 @@
----
-title: "FinalProjectSetup"
-output: word_document
-date: "2024-12-03"
----
-  
-
 ```{r}
 # Install and load required packages
 if (!require("BiocManager")) install.packages("BiocManager")
@@ -29,6 +22,15 @@ library(SummarizedExperiment)
 
 if (!require("DESeq2")) BiocManager::install("DESeq2")
 library(DESeq2)
+
+if (!require("sesame")) BiocManager::install("sesame")
+library(sesame)
+
+if (!require("sesameData")) BiocManager::install("sesameData")
+library(sesameData)
+
+if (!require("limma")) BiocManager::install("limma")
+library(limma)
 ```
 
 
@@ -41,7 +43,7 @@ rna_query <- GDCquery(
   data.type = "Gene Expression Quantification",
   workflow.type = "STAR - Counts"  # STAR alignment pipeline
 )
-GDCdownload(rna_query)  # Download the data
+#GDCdownload(rna_query)  # Download the data
 rna_se <- GDCprepare(rna_query)  # Prepare the data into SummarizedExperiment format
 ov_rna_clinical <- as.data.frame(rna_se@colData)  # Extract clinical metadata from RNA-seq
 ```
@@ -55,7 +57,7 @@ clin_query <- GDCquery(
   data.type = "Clinical Supplement",
   data.format = "BCR Biotab"
 )
-GDCdownload(clin_query)  # Download the data
+#GDCdownload(clin_query)  # Download the data
 clinical.BCRtab.all <- GDCprepare(clin_query)  # Prepare the data
 ov_clinical <- clinical.BCRtab.all$clinical_patient_ov[-c(1,2),]  # Remove non-patient data rows
 colnames(ov_clinical)[colnames(ov_clinical) == "bcr_patient_barcode"] <- "Tumor_Sample_Barcode"  # Rename key column
@@ -72,7 +74,7 @@ maf_query <- GDCquery(
   data.type = "Masked Somatic Mutation",
   workflow.type = "Aliquot Ensemble Somatic Variant Merging and Masking"
 )
-GDCdownload(maf_query)  # Download the mutation data
+#GDCdownload(maf_query)  # Download the mutation data
 maf <- GDCprepare(maf_query)  # Prepare the mutation data
 maf_object <- read.maf(maf = maf, clinicalData = ov_clinical, isTCGA = TRUE)  # Create a MAF object
 
@@ -114,7 +116,7 @@ ov_clinical$death_event <- ifelse(ov_clinical$vital_status == "Dead", TRUE, FALS
 ```
 
 
-KM plots
+# KM plots
 ```{r}
 # Create Kaplan-Meier survival curves for BRCA mutation groups
 survival_object <- Surv(time = ov_clinical$survival_time, event = ov_clinical$death_event)
@@ -173,10 +175,213 @@ print(plot_brca1$plot)
 print(plot_brca2$plot)
 ```
 
+# Prepare RNA-seq count data for DESeq2
+```{r}
+# Extract RNA-seq count matrix
+rna_counts <- assay(rna_se, "unstranded")  # Replace with the correct assay (e.g., stranded_first) if needed
+rna_counts <- as.data.frame(rna_counts)
+
+# Match clinical data with RNA-seq samples
+rna_clinical <- as.data.frame(rna_se@colData)
+rna_clinical$BRCA <- ov_clinical$BRCA[match(substr(rownames(rna_clinical), 1, 12), ov_clinical$Tumor_Sample_Barcode)]
+
+# Filter out samples with missing BRCA mutation status
+rna_clinical <- rna_clinical[!is.na(rna_clinical$BRCA), ]
+
+# Subset the count data to include only samples with BRCA mutation status
+rna_counts <- rna_counts[, colnames(rna_counts) %in% rownames(rna_clinical)]
+
+# Create DESeq2 dataset
+dds <- DESeqDataSetFromMatrix(
+  countData = rna_counts,
+  colData = rna_clinical,
+  design = ~ BRCA  # Model BRCA mutation status
+)
+
+# Run DESeq2 pipeline
+dds <- DESeq(dds)
+
+# Extract results
+results <- results(dds, contrast = c("BRCA", "Mutated", "Not Mutated"))
+results <- as.data.frame(results)
+
+# Save DEG results to a file
+output_dir <- "outputs"
+if (!dir.exists(output_dir)) dir.create(output_dir)
+write.csv(results, file = paste0(output_dir, "/DEG_results.csv"), row.names = TRUE)
+
+# Filter significant genes (adjusted p-value < 0.05)
+significant_genes <- results[results$padj < 0.05, ]
+write.csv(significant_genes, file = paste0(output_dir, "/Significant_DEG.csv"), row.names = TRUE)
+```
+
 
 ```{r}
-# lollipop plots
+# Remove rows with NA values in log2FoldChange or padj
+filtered_results <- results[!is.na(results$log2FoldChange) & !is.na(results$padj), ]
 
+# Recalculate log10 adjusted p-value
+filtered_results$logP <- -log10(filtered_results$padj)
+```
+
+
+```{r}
+# Ensure log2FoldChange and logP are finite
+filtered_results <- filtered_results[is.finite(filtered_results$log2FoldChange) & is.finite(filtered_results$logP), ]
+```
+
+
+```{r}
+# Add a new column for negative log10 of adjusted p-value
+filtered_results$logP <- -log10(filtered_results$padj)
+```
+
+# Convert ENSEMBL ID to Gene Label
+```{r}
+filtered_results$ensembl_id <- gsub("\\..*$", "", rownames(filtered_results))  # Remove version numbers if present
+# Load biomaRt
+if (!require("biomaRt")) BiocManager::install("biomaRt")
+library(biomaRt)
+
+# Connect to the Ensembl database
+ensembl <- useEnsembl(biomart = "ensembl", dataset = "hsapiens_gene_ensembl", mirror = "useast")
+
+# Get gene names for the Ensembl IDs
+gene_mapping <- getBM(
+  attributes = c("ensembl_gene_id", "external_gene_name"),
+  filters = "ensembl_gene_id",
+  values = filtered_results$ensembl_id,
+  mart = ensembl
+)
+
+# Merge the gene names back into the filtered_results
+filtered_results <- merge(
+  filtered_results, 
+  gene_mapping, 
+  by.x = "ensembl_id", 
+  by.y = "ensembl_gene_id", 
+  all.x = TRUE
+)
+
+# Rename the column for better readability
+colnames(filtered_results)[colnames(filtered_results) == "external_gene_name"] <- "Gene_Name"
+
+```
+
+# volcano w/ label and adjusted threshold
+```{r}
+# Install and load ggrepel if not already installed
+if (!require("ggrepel")) install.packages("ggrepel")
+library(ggrepel)
+
+# Add a new column for negative log10 of adjusted p-value
+filtered_results$logP <- -log10(filtered_results$padj)
+
+# Define significance with separate categories for overexpressed and underexpressed genes
+filtered_results$Significance <- ifelse(
+  filtered_results$padj < 0.05 & filtered_results$log2FoldChange > 2, "Overexpressed",
+  ifelse(
+    filtered_results$padj < 0.05 & filtered_results$log2FoldChange < -2, "Underexpressed",
+    "Not Significant"
+  )
+)
+
+# Add gene names to significant points for labeling
+filtered_results$GeneLabel <- ifelse(
+  filtered_results$Significance %in% c("Overexpressed", "Underexpressed"), 
+  filtered_results$Gene_Name, 
+  NA
+)
+
+# Generate the volcano plot with different colors for over- and underexpressed genes
+volcano_plot <- ggplot(filtered_results, aes(x = log2FoldChange, y = logP, color = Significance)) +
+  geom_point(alpha = 0.8, size = 1.5) +
+  geom_text_repel(
+    aes(label = GeneLabel),
+    size = 3,
+    max.overlaps = 8,  # Adjust this to limit the number of overlapping labels
+    box.padding = 0.3,
+    point.padding = 0.3
+  ) +
+  scale_color_manual(values = c(
+    "Not Significant" = "grey",
+    "Overexpressed" = "#042f50",
+    "Underexpressed" = "#3E8F99"
+  )) +
+  theme_minimal() +
+  labs(
+    title = "Differential Gene Expression: BRCA1/2-Mutated vs. Wild-Type Patients",
+    x = "Log2 Fold Change",
+    y = "-Log10 Adjusted P-value"
+  )
+
+# Define output directory
+output_dir <- "outputs"
+if (!dir.exists(output_dir)) dir.create(output_dir)
+
+# Save volcano plot to the output directory
+ggsave(filename = paste0(output_dir, "/VolcanoPlot_OverUnderDifferentiated.png"), plot = volcano_plot, width = 8, height = 6)
+
+# Display the volcano plot
+print(volcano_plot)
+
+
+```
+
+# Output top 10 DEGs
+```{r}
+# Filter significant genes (optional, based on adjusted p-value)
+significant_genes <- filtered_results[filtered_results$padj < 0.05, ]
+
+# Sort genes by log2FoldChange to identify overexpressed and underexpressed DEGs
+overexpressed_genes <- significant_genes[order(-significant_genes$log2FoldChange), ]  # Sort in descending order
+underexpressed_genes <- significant_genes[order(significant_genes$log2FoldChange), ]  # Sort in ascending order
+
+# Extract top 10 overexpressed and underexpressed genes
+top_10_overexpressed <- head(overexpressed_genes, 10)
+top_10_underexpressed <- head(underexpressed_genes, 10)
+
+# Print the top 10 overexpressed and underexpressed genes
+print("Top 10 Overexpressed Genes:")
+print(top_10_overexpressed)
+
+print("Top 10 Underexpressed Genes:")
+print(top_10_underexpressed)
+
+# Save results to CSV files
+write.csv(top_10_overexpressed, file = "top_10_overexpressed_genes.csv", row.names = FALSE)
+write.csv(top_10_underexpressed, file = "top_10_underexpressed_genes.csv", row.names = FALSE)
+
+```
+
+# Output top 100 DEGs
+```{r}
+# Filter significant genes (optional, based on adjusted p-value)
+significant_genes <- filtered_results[filtered_results$padj < 0.05, ]
+
+# Sort genes by log2FoldChange to identify overexpressed and underexpressed DEGs
+overexpressed_genes <- significant_genes[order(-significant_genes$log2FoldChange), ]  # Sort in descending order
+underexpressed_genes <- significant_genes[order(significant_genes$log2FoldChange), ]  # Sort in ascending order
+
+# Extract top 10 overexpressed and underexpressed genes
+top_100_overexpressed <- head(overexpressed_genes, 100)
+top_100_underexpressed <- head(underexpressed_genes, 100)
+
+# Print the top 10 overexpressed and underexpressed genes
+print("Top 100 Overexpressed Genes:")
+print(top_100_overexpressed)
+
+print("Top 100 Underexpressed Genes:")
+print(top_100_underexpressed)
+
+# Save results to CSV files
+write.csv(top_100_overexpressed, file = "top_100_overexpressed_genes.csv", row.names = TRUE)
+write.csv(top_100_underexpressed, file = "top_100_underexpressed_genes.csv", row.names = TRUE)
+
+```
+
+# lollipop plots
+```{r}
 # obtain the mutation clinical data frame
 maf_clinical <- maf_object@clinical.data
 
@@ -203,6 +408,3 @@ lollipopPlot(maf = brca1_maf, gene = 'BRCA1')
 lollipopPlot(maf = brca2_maf, gene = 'BRCA2')
 
 ```
-
-
-
